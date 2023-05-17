@@ -36,4 +36,4 @@ A `.tar` for each application in the backup will be extracted to the working dir
  * Additional debug output can be enabled by setting the `DEBUG` environment variable to `1`. Debug output may contain sensitive data!
 
 ## Building
-You can build the extractor by running `go build ./cmd/extract`. This will place a compiled `extract` binary in the working directory.
+You can build the extractor by running `go build ./cmd/extract` (with Go 1.20). This will place a compiled `extract` binary in the working directory.
