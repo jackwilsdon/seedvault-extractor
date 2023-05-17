@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
@@ -10,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/google/tink/go/streamingaead/subtle"
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/crypto/pbkdf2"
 	"io"
@@ -194,18 +195,95 @@ func hkdfExpand(secretKey, info []byte, outLengthBytes int64) []byte {
 	return k
 }
 
+const (
+	subKeySizeBytes      byte = 32
+	noncePrefixSizeBytes byte = 7
+	segmentSizeBytes          = 1 << 20
+	tagSizeBytes              = 16
+)
+
 func decrypt(r *bufio.Reader, key []byte, associatedData []byte) ([]byte, error) {
-	a, err := subtle.NewAESGCMHKDF(key, "SHA256", 32, 1<<20, 0)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create AESGCMHKDF: %w", err)
+	expectedHeaderLength := 1 + subKeySizeBytes + noncePrefixSizeBytes
+	if headerLength, err := r.ReadByte(); err != nil {
+		return nil, fmt.Errorf("failed to read header length: %w", err)
+	} else if headerLength != expectedHeaderLength {
+		return nil, fmt.Errorf("malformed header (expected length to be %d bytes, got %d)", expectedHeaderLength, headerLength)
 	}
-	dr, err := a.NewDecryptingReader(r, associatedData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create decrypting reader: %w", err)
+
+	// Subtracting 1 as we've already read the length.
+	header := make([]byte, expectedHeaderLength-1)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return nil, fmt.Errorf("failed to read header: %w", err)
 	}
-	data, err := io.ReadAll(dr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read decrypted data: %w", err)
+
+	salt := header[:subKeySizeBytes]
+	derivedKey := make([]byte, subKeySizeBytes)
+	if _, err := io.ReadFull(hkdf.New(sha256.New, key, salt, associatedData), derivedKey); err != nil {
+		return nil, fmt.Errorf("failed to derive key: %w", err)
 	}
-	return data, nil
+	aesCipher, err := aes.NewCipher(derivedKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+	}
+	aesGCMCipher, err := cipher.NewGCMWithTagSize(aesCipher, tagSizeBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create GCM cipher: %w", err)
+	}
+
+	// Add 1 to read an extra byte to detect the last segment.
+	segment := make([]byte, segmentSizeBytes+1)
+	var fullPlaintext []byte
+	var segmentIndex uint32
+	noncePrefix := header[subKeySizeBytes:]
+	for {
+		var end int
+		if segmentIndex == 0 {
+			// First segment is shorter by the length of the header.
+			end, err = io.ReadFull(r, segment[:len(segment)-int(expectedHeaderLength)])
+		} else {
+			// We read 1 extra byte in the first segment, which offset all
+			// subsequent reads by a byte. The last byte of the previous
+			// segment is at segment[0], so we read into the slice after this
+			// to get the full segment.
+			end, err = io.ReadFull(r, segment[1:])
+			end += 1
+		}
+
+		var lastSegment bool
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			// As we always over-read by 1 byte, an unexpected EOF indicates
+			// that this is the last segment.
+			lastSegment = true
+		} else if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("failed to read segment %d: %w", segmentIndex, err)
+		} else {
+			// This isn't the last segment, meaning we've now read one extra
+			// byte that is part of the next segment. Subtract 1 from the
+			// number of bytes read to avoid including the extra byte in this
+			// segment.
+			end -= 1
+		}
+
+		// 4 bytes for index, 1 byte for last segment marker.
+		nonce := make([]byte, len(noncePrefix)+5)
+		copy(nonce, noncePrefix)
+		binary.BigEndian.PutUint32(nonce[len(noncePrefix):], segmentIndex)
+		if lastSegment {
+			nonce[len(noncePrefix)+4] = 1
+		}
+
+		plaintext, err := aesGCMCipher.Open(nil, nonce, segment[:end], nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decrypt segment %d: %w", segmentIndex, err)
+		}
+		fullPlaintext = append(fullPlaintext, plaintext...)
+
+		if lastSegment {
+			return fullPlaintext, nil
+		} else {
+			segment[0] = segment[end]
+		}
+
+		segmentIndex++
+	}
 }
