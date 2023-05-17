@@ -31,7 +31,7 @@ You can tell if a directory is a backup as it will contain a `.backup.metadata` 
 A `.tar` for each application in the backup will be extracted to the working directory.
 
 ## Notes
- * Extracting KV backups is currently unsupported.
+ * KV backups are currently exported in SQLite format.
  * This tool has only been tested on Linux. Please [let me know](https://github.com/jackwilsdon/seedvault-extractor/issues/new) how it's working for you on other platforms.
  * Additional debug output can be enabled by setting the `DEBUG` environment variable to `1`. Debug output may contain sensitive data!
 

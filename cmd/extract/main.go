@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
@@ -17,6 +19,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+)
+
+const (
+	typeKVBackup   = 1
+	typeFullBackup = 2
 )
 
 func main() {
@@ -135,7 +142,7 @@ func main() {
 				fmt.Printf("skipping %q (unsupported state %q)\n", packageName, packageMeta.State)
 				return nil
 			}
-			if packageMeta.BackupType != "FULL" {
+			if packageMeta.BackupType != "KV" && packageMeta.BackupType != "FULL" {
 				fmt.Printf("skipping %q (unsupported backup type %q)\n", packageName, packageMeta.BackupType)
 				return nil
 			}
@@ -159,18 +166,35 @@ func main() {
 				return fmt.Errorf("%q version %d does not match metadata file version %d", packagePath, packageVersion, version)
 			}
 
-			fullAdditionalData := make([]byte, 2+len(packageName))
-			fullAdditionalData[0] = version
-			fullAdditionalData[1] = 2
-			copy(fullAdditionalData[2:], packageName)
-			packageBytes, err := decrypt(packageReader, key, fullAdditionalData)
+			var type_ byte
+			if packageMeta.BackupType == "KV" {
+				type_ = typeKVBackup
+			} else {
+				type_ = typeFullBackup
+			}
+
+			packageBytes, err := decrypt(packageReader, key, getAdditionalData(version, type_, packageName))
 			if err != nil {
 				return fmt.Errorf("failed to decrypt %q: %w", packagePath, err)
 			}
 
-			tarPath := packageName + ".tar"
-			if err := os.WriteFile(tarPath, packageBytes, 0777); err != nil {
-				return fmt.Errorf("failed to write %q: %w", tarPath, err)
+			var ext string
+			if packageMeta.BackupType == "KV" {
+				r, err := gzip.NewReader(bytes.NewReader(packageBytes))
+				if err != nil {
+					return fmt.Errorf("failed to decompress %q: %w", packagePath, err)
+				}
+				if packageBytes, err = io.ReadAll(r); err != nil {
+					return fmt.Errorf("failed to decompress %q: %w", packagePath, err)
+				}
+				ext = ".sqlite"
+			} else {
+				ext = ".tar"
+			}
+
+			outPath := packageName + ext
+			if err := os.WriteFile(outPath, packageBytes, 0777); err != nil {
+				return fmt.Errorf("failed to write %q: %w", outPath, err)
 			}
 			return nil
 		}()
@@ -192,6 +216,14 @@ func hkdfExpand(secretKey, info []byte, outLengthBytes int64) []byte {
 		panic("failed to read HKDF: " + err.Error())
 	}
 	return k
+}
+
+func getAdditionalData(version byte, type_ byte, packageName string) []byte {
+	ad := make([]byte, 2+len(packageName))
+	ad[0] = version
+	ad[1] = type_
+	copy(ad[2:], packageName)
+	return ad
 }
 
 func decrypt(r *bufio.Reader, key []byte, associatedData []byte) ([]byte, error) {
