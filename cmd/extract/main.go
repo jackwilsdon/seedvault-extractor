@@ -196,6 +196,7 @@ func main() {
 			if err := os.WriteFile(outPath, packageBytes, 0777); err != nil {
 				return fmt.Errorf("failed to write %q: %w", outPath, err)
 			}
+			fmt.Println(outPath)
 			return nil
 		}()
 		if err != nil {
