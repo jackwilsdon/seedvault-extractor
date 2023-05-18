@@ -13,12 +13,14 @@ import (
 	"errors"
 	"fmt"
 	"github.com/google/tink/go/streamingaead/subtle"
+	"github.com/jackwilsdon/seedvault-extractor/internal"
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/crypto/pbkdf2"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -79,7 +81,11 @@ func main() {
 		fmt.Printf("token: %d\n", token)
 	}
 
-	seed := mnemonicToSeed(os.Args[2])
+	seed, err := mnemonicToSeed(os.Args[2])
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "error: failed to read seed from mnemonic: %s\n", err)
+		os.Exit(1)
+	}
 	if debug {
 		fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
 	}
@@ -206,8 +212,20 @@ func main() {
 	}
 }
 
-func mnemonicToSeed(mnemonic string) []byte {
-	return pbkdf2.Key([]byte(mnemonic), []byte("mnemonic"), 2048, 64, sha512.New)
+func mnemonicToSeed(mnemonic string) ([]byte, error) {
+	phrases := strings.Split(mnemonic, " ")
+
+	if len(phrases) != 12 {
+		return nil, fmt.Errorf("12 mnemonics needed, yet %d given", len(phrases))
+	}
+
+	for _, phrase := range phrases {
+		if _, ok := internal.Bip39Words[phrase]; !ok {
+			return nil, fmt.Errorf("invalid mnemonic given (case-sensitive): '%s'", phrase)
+		}
+	}
+
+	return pbkdf2.Key([]byte(mnemonic), []byte("mnemonic"), 2048, 64, sha512.New), nil
 }
 
 func hkdfExpand(secretKey, info []byte, outLengthBytes int64) []byte {
