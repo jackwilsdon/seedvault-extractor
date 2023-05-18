@@ -200,8 +200,7 @@ func main() {
 			return nil
 		}()
 		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "error: failed to extract %q: %s\n", packageName, err)
-			os.Exit(1)
+			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to extract %q: %s\n", packageName, err)
 		}
 	}
 }
