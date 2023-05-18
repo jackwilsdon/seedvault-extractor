@@ -129,6 +129,9 @@ func main() {
 		if packageName == "@meta@" {
 			continue
 		}
+		if packageName == "@end@" {
+			continue
+		}
 
 		err = func() error {
 			var packageMeta struct {
