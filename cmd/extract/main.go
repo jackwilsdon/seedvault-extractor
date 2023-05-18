@@ -221,7 +221,7 @@ func mnemonicToSeed(mnemonic string) ([]byte, error) {
 
 	for _, phrase := range phrases {
 		if _, ok := internal.Bip39Words[phrase]; !ok {
-			return nil, fmt.Errorf("invalid mnemonic given (case-sensitive): '%s'", phrase)
+			return nil, fmt.Errorf("invalid mnemonic given (case-sensitive): %s", phrase)
 		}
 	}
 
