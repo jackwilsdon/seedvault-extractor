@@ -17,10 +17,13 @@ import (
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/crypto/pbkdf2"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -37,11 +40,133 @@ func main() {
 	}
 
 	backupPath := os.Args[1]
-	err := extractAppBackup(backupPath)
+	//err := extractAppBackup(backupPath)
+	err := extractFileBackup(backupPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: %s\n", err)
 		os.Exit(1)
 	}
+}
+
+var folderRegex = regexp.MustCompile("^[a-f0-9]{16}\\.sv$")
+var chunkFolderRegex = regexp.MustCompile("^[a-f0-9]{2}$")
+var chunkRegex = regexp.MustCompile("^[a-f0-9]{64}$")
+var snapshotRegex = regexp.MustCompile("^([0-9]{13})\\.SeedSnap$")
+
+type storedSnapshotT struct {
+	time      string
+	timestamp uint64
+	path      string
+}
+
+func extractFileBackup(backupPath string) error {
+	backupName := filepath.Base(backupPath)
+
+	seed, err := mnemonicToSeed(os.Args[2])
+	if err != nil {
+		return fmt.Errorf("failed to read seed from mnemonic: %s\n", err)
+	}
+	if debug {
+		fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
+	}
+
+	key := hkdfExpand(seed[32:], []byte("app data key"), 32)
+	if debug {
+		fmt.Printf("key: %s\n", hex.EncodeToString(key))
+	}
+
+	if !folderRegex.MatchString(backupName) {
+		return fmt.Errorf("unexpected folder name: %s\n", backupName)
+	}
+
+	var chunkFolderFiles []fs.DirEntry
+	var storedSnapshots []storedSnapshotT
+
+	chunkFolders, _ := os.ReadDir(backupPath)
+	for _, chunkFolder := range chunkFolders {
+		if chunkFolderRegex.MatchString(chunkFolder.Name()) {
+			chunkFolderFiles = append(chunkFolderFiles, chunkFolder)
+			if !chunkFolder.IsDir() {
+				return fmt.Errorf("unexpected file at chunk folder level: %s/%s\n", backupPath, chunkFolder.Name())
+			}
+			//chunkFiles, _ := os.ReadDir(backupPath + "/" + chunkFolder.Name())
+			//for _, chunkFile := range chunkFiles {
+			//	fmt.Println("chunkFile " + chunkFile.Name())
+			//}
+		} else if snapshotRegex.MatchString(chunkFolder.Name()) {
+			if chunkFolder.IsDir() {
+				return fmt.Errorf("unexpected folder: %s\n", chunkFolder.Name())
+			}
+			timestamp, err := strconv.ParseUint(snapshotRegex.FindStringSubmatch(chunkFolder.Name())[1], 10, 64)
+			if err != nil {
+				return err
+			}
+			tm := time.Unix(int64(timestamp/1000), 0)
+
+			fmt.Printf("storedSnapshot: %v\n", timestamp)
+			fmt.Printf("storedSnapshot: %s - %s\n", tm, backupPath+"/"+chunkFolder.Name())
+			storedSnapshots = append(storedSnapshots, storedSnapshotT{
+				time:      tm.String(),
+				timestamp: timestamp,
+				path:      backupPath + "/" + chunkFolder.Name(),
+			})
+
+		} else {
+			return fmt.Errorf("unexpected file/folder: %s\n", chunkFolder.Name())
+		}
+	}
+
+	storedSnapshot := storedSnapshots[0]
+	metadataPath := storedSnapshot.path
+
+	s, err := os.Stat(metadataPath)
+	if errors.Is(err, os.ErrNotExist) {
+		_, _ = fmt.Fprintln(os.Stderr, "error: not a backup (missing .backup.metadata)")
+	} else if err != nil {
+		return fmt.Errorf("failed to stat %q: %s\n", metadataPath, err)
+	} else if s.Size() == 0 {
+		return fmt.Errorf("empty file %q\n", metadataPath)
+	}
+
+	metadataFile, err := os.Open(metadataPath)
+	if err != nil {
+		return fmt.Errorf("failed to open %q: %s\n", metadataPath, err)
+	}
+	defer func() {
+		_ = metadataFile.Close()
+	}()
+
+	metadataReader := bufio.NewReader(metadataFile)
+	version, err := metadataReader.ReadByte()
+	if err != nil {
+		return fmt.Errorf("failed to read version from %q: %s\n", metadataPath, err)
+	}
+	if version != 1 {
+		//return fmt.Errorf("unsupported version %d (only version 1 is supported)\n", version)
+	}
+	if debug {
+		fmt.Printf("version: %d\n", version)
+	}
+
+	associatedData := make([]byte, 10)
+	associatedData[0] = version
+	binary.BigEndian.PutUint64(associatedData[2:], storedSnapshot.timestamp)
+	metadataBytes, err := decrypt(metadataReader, key, associatedData)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt metadata: %s\n", err)
+	}
+	if debug {
+		fmt.Printf("metadata: %s\n", string(metadataBytes))
+	}
+
+	//var metadataMap map[string]json.RawMessage
+	//if err := json.Unmarshal(metadataBytes, &metadataMap); err != nil {
+	//	return fmt.Errorf("failed to unmarshal metadata: %s\n", err)
+	//	os.Exit(1)
+	//}
+	//
+	//fmt.Printf("%v\n", metadataMap)
+	return nil
 }
 
 func extractAppBackup(backupPath string) error {
@@ -86,8 +211,7 @@ func extractAppBackup(backupPath string) error {
 
 	seed, err := mnemonicToSeed(os.Args[2])
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "error: failed to read seed from mnemonic: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to read seed from mnemonic: %s\n", err)
 	}
 	if debug {
 		fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
