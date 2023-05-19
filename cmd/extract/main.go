@@ -16,6 +16,7 @@ import (
 	"github.com/jackwilsdon/seedvault-extractor/internal"
 	"golang.org/x/crypto/hkdf"
 	"golang.org/x/crypto/pbkdf2"
+	"google.golang.org/protobuf/proto"
 	"io"
 	"io/fs"
 	"os"
@@ -159,17 +160,16 @@ func extractFileBackup(backupPath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to decrypt metadata: %s\n", err)
 	}
+
+	var metadata internal.BackupSnapshot
+	err = proto.Unmarshal(metadataBytes, &metadata)
+	if err != nil {
+		return err
+	}
 	if debug {
-		fmt.Printf("metadata: %s\n", string(metadataBytes))
+		fmt.Printf("metadata: %v\n", metadata)
 	}
 
-	//var metadataMap map[string]json.RawMessage
-	//if err := json.Unmarshal(metadataBytes, &metadataMap); err != nil {
-	//	return fmt.Errorf("failed to unmarshal metadata: %s\n", err)
-	//	os.Exit(1)
-	//}
-	//
-	//fmt.Printf("%v\n", metadataMap)
 	return nil
 }
 
