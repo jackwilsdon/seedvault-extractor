@@ -309,11 +309,25 @@ func restoreBackupSnapshot(backupPath string, metadata internal.BackupSnapshot) 
 			return fmt.Errorf("failed to open %q: %w", chunkFilepath, err)
 		}
 		defer chunkFile.Close()
+		chunkReader := bufio.NewReader(chunkFile)
+
+		// inputStream.readVersion(version)
+		packageVersion, err := chunkReader.ReadByte()
+		if err != nil {
+			return fmt.Errorf("failed to read version from %q: %w", chunkFilepath, err)
+		}
+		if packageVersion != version {
+			fmt.Printf("%q version %d does not match metadata file version %d\n", chunkFilepath, packageVersion, version)
+		}
 
 		// getAssociatedDataForChunk
+		KEY_SIZE_BYTES := 256 / 8
 		token, err := hex.DecodeString(singleChunk.chunkId)
 		if err != nil {
 			return fmt.Errorf("failed to parse chunkId %q: %s\n", singleChunk.chunkId, err)
+		}
+		if len(token) != KEY_SIZE_BYTES {
+			return fmt.Errorf("failed to parse token,wrong length %d: %q\n", len(token), token)
 		}
 		if debug {
 			fmt.Printf("token: %d\n", token)
@@ -327,10 +341,9 @@ func restoreBackupSnapshot(backupPath string, metadata internal.BackupSnapshot) 
 			fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
 		}
 
-		KEY_SIZE_BYTES := 32
-		key := hkdfExpand(seed[32:], []byte("app data key"), int64(KEY_SIZE_BYTES))
+		streamKey := hkdfExpand(seed[32:], []byte("stream key"), int64(KEY_SIZE_BYTES))
 		if debug {
-			fmt.Printf("key: %s\n", hex.EncodeToString(key))
+			fmt.Printf("streamKey: %s\n", hex.EncodeToString(streamKey))
 		}
 
 		associatedData := make([]byte, 2+KEY_SIZE_BYTES)
@@ -338,16 +351,8 @@ func restoreBackupSnapshot(backupPath string, metadata internal.BackupSnapshot) 
 		associatedData[1] = TypeChunk
 		copy(associatedData[2:], token)
 
-		chunkReader := bufio.NewReader(chunkFile)
-		packageVersion, err := chunkReader.ReadByte()
-		if err != nil {
-			return fmt.Errorf("failed to read version from %q: %w", chunkFilepath, err)
-		}
-		if packageVersion != version {
-			fmt.Printf("%q version %d does not match metadata file version %d\n", chunkFilepath, packageVersion, version)
-		}
-
-		metadataBytes, err := decrypt(chunkReader, key, associatedData)
+		//newDecryptingStream
+		metadataBytes, err := decrypt(chunkReader, streamKey, associatedData)
 		if err != nil {
 			return fmt.Errorf("failed to decrypt metadata: %s\n", err)
 		}
