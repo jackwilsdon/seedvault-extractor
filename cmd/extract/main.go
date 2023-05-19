@@ -28,6 +28,8 @@ const (
 	typeFullBackup = 2
 )
 
+var debug = os.Getenv("DEBUG") == "1"
+
 func main() {
 	if len(os.Args) != 3 {
 		_, _ = fmt.Fprintf(os.Stderr, "usage: %s path-to-backup mnemonic\n", filepath.Base(os.Args[0]))
@@ -35,20 +37,25 @@ func main() {
 	}
 
 	backupPath := os.Args[1]
+	err := extractAppBackup(backupPath)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "error: %s\n", err)
+		os.Exit(1)
+	}
+}
+
+func extractAppBackup(backupPath string) error {
 	metadataPath := filepath.Join(backupPath, ".backup.metadata")
 	_, err := os.Stat(metadataPath)
 	if errors.Is(err, os.ErrNotExist) {
-		_, _ = fmt.Fprintln(os.Stderr, "error: not a backup (missing .backup.metadata)")
-		os.Exit(1)
+		return fmt.Errorf("not a backup (missing .backup.metadata)")
 	} else if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "error: failed to stat %q: %s\n", metadataPath, err)
-		os.Exit(1)
+		return fmt.Errorf("failed to stat %q: %s\n", metadataPath, err)
 	}
 
 	metadataFile, err := os.Open(metadataPath)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "error: failed to open %q: %s\n", metadataPath, err)
-		os.Exit(1)
+		return fmt.Errorf("failed to open %q: %s\n", metadataPath, err)
 	}
 	defer func() {
 		_ = metadataFile.Close()
@@ -57,15 +64,12 @@ func main() {
 	metadataReader := bufio.NewReader(metadataFile)
 	version, err := metadataReader.ReadByte()
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "error: failed to read version from %q: %s\n", metadataPath, err)
-		os.Exit(1)
+		return fmt.Errorf("failed to read version from %q: %s\n", metadataPath, err)
 	}
 	if version != 1 {
-		_, _ = fmt.Fprintf(os.Stderr, "error: unsupported version %d (only version 1 is supported)\n", version)
-		os.Exit(1)
+		return fmt.Errorf("unsupported version %d (only version 1 is supported)\n", version)
 	}
 
-	debug := os.Getenv("DEBUG") == "1"
 	if debug {
 		fmt.Printf("version: %d\n", version)
 	}
@@ -73,8 +77,7 @@ func main() {
 	backupName := filepath.Base(backupPath)
 	token, err := strconv.ParseUint(backupName, 10, 64)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "error: failed to parse backup name %q: %s\n", backupName, err)
-		os.Exit(1)
+		return fmt.Errorf("failed to parse backup name %q: %s\n", backupName, err)
 	}
 
 	if debug {
@@ -100,8 +103,7 @@ func main() {
 	binary.BigEndian.PutUint64(associatedData[2:], token)
 	metadataBytes, err := decrypt(metadataReader, key, associatedData)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "error: failed to decrypt metadata: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to decrypt metadata: %s\n", err)
 	}
 	if debug {
 		fmt.Printf("metadata: %s\n", string(metadataBytes))
@@ -109,26 +111,22 @@ func main() {
 
 	var metadataMap map[string]json.RawMessage
 	if err := json.Unmarshal(metadataBytes, &metadataMap); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "error: failed to unmarshal metadata: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to unmarshal metadata: %s\n", err)
 	}
 
 	metadataMetaBytes, ok := metadataMap["@meta@"]
 	if !ok {
-		_, _ = fmt.Fprintf(os.Stderr, "error: missing @meta@ key\n")
-		os.Exit(1)
+		return fmt.Errorf("missing @meta@ key\n")
 	}
 	var metadataMeta struct {
 		Version byte   `json:"version"`
 		Salt    string `json:"salt"`
 	}
 	if err := json.Unmarshal(metadataMetaBytes, &metadataMeta); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "error: failed to unmarshal @meta@: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to unmarshal @meta@: %s\n", err)
 	}
 	if metadataMeta.Version != version {
-		_, _ = fmt.Fprintf(os.Stderr, "error: @meta@ version %d does not match metadata file version %d\n", metadataMeta.Version, version)
-		os.Exit(1)
+		return fmt.Errorf("@meta@ version %d does not match metadata file version %d\n", metadataMeta.Version, version)
 	}
 
 	for packageName, packageMetaBytes := range metadataMap {
@@ -212,6 +210,7 @@ func main() {
 			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to extract %q: %s\n", packageName, err)
 		}
 	}
+	return nil
 }
 
 func mnemonicToSeed(mnemonic string) ([]byte, error) {
