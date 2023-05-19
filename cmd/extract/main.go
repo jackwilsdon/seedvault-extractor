@@ -40,7 +40,7 @@ func main() {
 	}
 
 	backupPath := os.Args[1]
-	//err := extractAppBackup(backupPath)
+	// err := extractAppBackup(backupPath)
 	err := extractFileBackup(backupPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: %s\n", err)
@@ -59,6 +59,9 @@ type storedSnapshotT struct {
 	path      string
 }
 
+const TypeChunk byte = 0x0
+const TypeSnapshot byte = 0x1
+
 func extractFileBackup(backupPath string) error {
 	backupName := filepath.Base(backupPath)
 
@@ -70,7 +73,7 @@ func extractFileBackup(backupPath string) error {
 		fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
 	}
 
-	key := hkdfExpand(seed[32:], []byte("app data key"), 32)
+	key := hkdfExpand(seed[32:], []byte("stream key"), 32)
 	if debug {
 		fmt.Printf("key: %s\n", hex.EncodeToString(key))
 	}
@@ -121,7 +124,7 @@ func extractFileBackup(backupPath string) error {
 
 	s, err := os.Stat(metadataPath)
 	if errors.Is(err, os.ErrNotExist) {
-		_, _ = fmt.Fprintln(os.Stderr, "error: not a backup (missing .backup.metadata)")
+		_, _ = fmt.Fprintln(os.Stderr, "error: not a backup (missing .SeedSnap)")
 	} else if err != nil {
 		return fmt.Errorf("failed to stat %q: %s\n", metadataPath, err)
 	} else if s.Size() == 0 {
@@ -150,6 +153,7 @@ func extractFileBackup(backupPath string) error {
 
 	associatedData := make([]byte, 10)
 	associatedData[0] = version
+	associatedData[1] = TypeSnapshot
 	binary.BigEndian.PutUint64(associatedData[2:], storedSnapshot.timestamp)
 	metadataBytes, err := decrypt(metadataReader, key, associatedData)
 	if err != nil {
@@ -224,6 +228,7 @@ func extractAppBackup(backupPath string) error {
 
 	associatedData := make([]byte, 10)
 	associatedData[0] = version
+	associatedData[1] = TypeChunk
 	binary.BigEndian.PutUint64(associatedData[2:], token)
 	metadataBytes, err := decrypt(metadataReader, key, associatedData)
 	if err != nil {
