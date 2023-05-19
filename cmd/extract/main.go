@@ -140,6 +140,7 @@ func extractFileBackup(backupPath string) error {
 		_ = metadataFile.Close()
 	}()
 
+	// https://github.com/seedvault-app/seedvault/blob/8bea1be06067eda9c18d984f94f6b1787f2e9614/storage/lib/src/main/java/org/calyxos/backup/storage/plugin/SnapshotRetriever.kt#L29
 	metadataReader := bufio.NewReader(metadataFile)
 	version, err := metadataReader.ReadByte()
 	if err != nil {
@@ -169,6 +170,209 @@ func extractFileBackup(backupPath string) error {
 	if debug {
 		fmt.Printf("metadata: %v\n", metadata)
 	}
+
+	err = restoreBackupSnapshot(backupPath, metadata)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func restoreBackupSnapshot(backupPath string, metadata internal.BackupSnapshot) error {
+	filesTotal := len(metadata.MediaFiles) + len(metadata.DocumentFiles)
+	fmt.Println("filesTotal ", filesTotal)
+
+	totalSize := int64(0)
+	for _, file := range metadata.MediaFiles {
+		totalSize += file.Size
+	}
+	for _, file := range metadata.DocumentFiles {
+		totalSize += file.Size
+	}
+	fmt.Println("totalSize ", totalSize)
+
+	type RestorableFile struct {
+		mediaFile *internal.BackupMediaFile
+		docFile   *internal.BackupDocumentFile
+	}
+	type RestorableChunk struct {
+		chunkId string
+		files   []RestorableFile
+	}
+	zipChunkMap := map[string]*RestorableChunk{}
+	chunkMap := map[string]*RestorableChunk{}
+
+	for _, mediaFile := range metadata.MediaFiles {
+		fmt.Printf("MF %s/%s %d %s\n", mediaFile.Path, mediaFile.Name, mediaFile.Size, mediaFile.ChunkIds)
+
+		if mediaFile.ZipIndex > 0 {
+			if len(mediaFile.ChunkIds) != 1 {
+				return fmt.Errorf("more than 1 zip chunk: %s", mediaFile.Name)
+			}
+			chunkId := mediaFile.ChunkIds[0]
+			zipChunk, ok := zipChunkMap[chunkId]
+			if !ok {
+				zipChunk = &RestorableChunk{chunkId: chunkId}
+				zipChunkMap[chunkId] = zipChunk
+			}
+			zipChunk.files = append(zipChunk.files, RestorableFile{mediaFile: mediaFile})
+		} else {
+			for _, chunkId := range mediaFile.ChunkIds {
+				chunk, ok := chunkMap[chunkId]
+				if !ok {
+					chunk = &RestorableChunk{chunkId: chunkId}
+					chunkMap[chunkId] = chunk
+				}
+				chunk.files = append(chunk.files, RestorableFile{mediaFile: mediaFile})
+			}
+		}
+	}
+	fmt.Printf("%d non zip chunks found\n", len(chunkMap))
+
+	for _, docFile := range metadata.MediaFiles {
+		fmt.Printf("DF %s/%s %d %s\n", docFile.Path, docFile.Name, docFile.Size, docFile.ChunkIds)
+
+		if docFile.ZipIndex > 0 {
+			if len(docFile.ChunkIds) != 1 {
+				return fmt.Errorf("more than 1 zip chunk: %s", docFile.Name)
+			}
+			chunkId := docFile.ChunkIds[0]
+			zipChunk, ok := zipChunkMap[chunkId]
+			if !ok {
+				zipChunk = &RestorableChunk{chunkId: chunkId}
+				zipChunkMap[chunkId] = zipChunk
+			}
+			zipChunk.files = append(zipChunk.files, RestorableFile{mediaFile: docFile})
+		} else {
+			for _, chunkId := range docFile.ChunkIds {
+				chunk, ok := chunkMap[chunkId]
+				if !ok {
+					chunk = &RestorableChunk{chunkId: chunkId}
+					chunkMap[chunkId] = chunk
+				}
+				chunk.files = append(chunk.files, RestorableFile{mediaFile: docFile})
+			}
+		}
+	}
+	fmt.Printf("%d non zip chunks found\n", len(chunkMap))
+
+	fmt.Printf("%d zip chunks found\n", len(zipChunkMap))
+	var singleChunks []*RestorableChunk
+	var multiChunks []*RestorableChunk
+	for _, chunk := range chunkMap {
+		//fmt.Printf("%v %d %v\n", x, len(chunk.files), chunk.files)
+		if len(chunk.files) == 1 {
+			singleChunks = append(singleChunks, chunk)
+		} else {
+			multiChunks = append(multiChunks, chunk)
+		}
+	}
+
+	fmt.Printf("Extracting %d zip chunks\n", len(zipChunkMap))
+	//for _, zipChunk := range zipChunkMap {
+	//
+	//	decryptedStream := getAndDecryptChunk(version, storedSnapshot, zipChunk.chunkId)
+	//
+	//	reader, err := zip.NewReader(decryptedStream, -1)
+	//	if err != nil {
+	//		return err
+	//	}
+	//	for _, zipEntry := range reader {
+	//		//restoreZipEntry
+	//		while (entry != null && entry.name != file.zipIndex.toString()) {
+	//			entry = zip.nextEntry
+	//		}
+	//		check(entry != null) { "zip entry was null for: $file" }
+	//		restoreFile(file, observer, "S") { outputStream: OutputStream ->
+	//			val bytes = zip.copyTo(outputStream)
+	//			zip.closeEntry()
+	//			bytes
+	//		}
+	//		if err != nil {
+	//			fmt.Printf("failed to extract small file %s\n", zipEntry)
+	//		}
+	//	}
+	//}
+
+	fmt.Printf("Extracting %d single chunks\n", len(singleChunks))
+	for _, singleChunk := range singleChunks {
+		fmt.Printf("singleChunk %s\n", singleChunk)
+
+		//decryptedStream := getAndDecryptChunk(version, storedSnapshot, singleChunk.chunkId)
+		version := byte(1)
+
+		// getChunkInputStream
+		chunkFilepath := filepath.Join(backupPath, singleChunk.chunkId[:2], singleChunk.chunkId)
+		chunkFile, err := os.Open(chunkFilepath)
+		if err != nil {
+			return fmt.Errorf("failed to open %q: %w", chunkFilepath, err)
+		}
+		defer chunkFile.Close()
+
+		// getAssociatedDataForChunk
+		token, err := hex.DecodeString(singleChunk.chunkId)
+		if err != nil {
+			return fmt.Errorf("failed to parse chunkId %q: %s\n", singleChunk.chunkId, err)
+		}
+		if debug {
+			fmt.Printf("token: %d\n", token)
+		}
+
+		seed, err := mnemonicToSeed(os.Args[2])
+		if err != nil {
+			return fmt.Errorf("failed to read seed from mnemonic: %s\n", err)
+		}
+		if debug {
+			fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
+		}
+
+		KEY_SIZE_BYTES := 32
+		key := hkdfExpand(seed[32:], []byte("app data key"), int64(KEY_SIZE_BYTES))
+		if debug {
+			fmt.Printf("key: %s\n", hex.EncodeToString(key))
+		}
+
+		associatedData := make([]byte, 2+KEY_SIZE_BYTES)
+		associatedData[0] = version
+		associatedData[1] = TypeChunk
+		copy(associatedData[2:], token)
+
+		chunkReader := bufio.NewReader(chunkFile)
+		packageVersion, err := chunkReader.ReadByte()
+		if err != nil {
+			return fmt.Errorf("failed to read version from %q: %w", chunkFilepath, err)
+		}
+		if packageVersion != version {
+			fmt.Printf("%q version %d does not match metadata file version %d\n", chunkFilepath, packageVersion, version)
+		}
+
+		metadataBytes, err := decrypt(chunkReader, key, associatedData)
+		if err != nil {
+			return fmt.Errorf("failed to decrypt metadata: %s\n", err)
+		}
+		if debug {
+			fmt.Printf("metadata: %s\n", string(metadataBytes))
+		}
+
+		targetFilePath := ""
+		if singleChunk.files[0].mediaFile != nil {
+			targetFilePath = singleChunk.files[0].mediaFile.Path + "/" + singleChunk.files[0].mediaFile.Name
+		} else {
+			targetFilePath = singleChunk.files[0].docFile.Path + "/" + singleChunk.files[0].docFile.Name
+		}
+
+		outPath := filepath.Join(".", "testOut", targetFilePath)
+		if err := os.WriteFile(outPath, metadataBytes, 0777); err != nil {
+			return fmt.Errorf("failed to write %q: %w", outPath, err)
+		}
+
+		fmt.Println(outPath)
+	}
+
+	fmt.Printf("Extracting %d multi chunks\n", len(multiChunks))
+	//for _, multiChunk := range multiChunks {
+	//}
 
 	return nil
 }
@@ -333,6 +537,7 @@ func extractAppBackup(backupPath string) error {
 				return fmt.Errorf("failed to write %q: %w", outPath, err)
 			}
 			fmt.Println(outPath)
+
 			return nil
 		}()
 		if err != nil {
