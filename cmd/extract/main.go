@@ -372,65 +372,33 @@ func restoreSingleChunk(storedSnapshot storedSnapshotT, singleChunk *RestorableC
 	associatedData[1] = TypeChunk
 	copy(associatedData[2:], token)
 
-	//newDecryptingStream
-	metadataBytes, err := decrypt(chunkReader, streamKey, associatedData)
+	decryptedBytes, err := decrypt(chunkReader, streamKey, associatedData)
 	if err != nil {
-		return fmt.Errorf("failed to decrypt metadata: %s\n", err)
+		return fmt.Errorf("failed to decrypt file chunk: %s\n", err)
 	}
 	if debug {
-		fmt.Printf("metadata: %s\n", string(metadataBytes))
+		fmt.Printf("decrypted file chunk length: %d\n", len(decryptedBytes))
 	}
 
 	targetFilePath := ""
 	if file.mediaFile != nil {
-		targetFilePath = file.mediaFile.Path + "/" + singleChunk.files[0].mediaFile.Name
+		targetFilePath = file.mediaFile.Path + "/" + file.mediaFile.Name
 	} else {
-		targetFilePath = file.docFile.Path + "/" + singleChunk.files[0].docFile.Name
+		targetFilePath = file.docFile.Path + "/" + file.docFile.Name
 	}
 
 	outPath := filepath.Join(".", "testOut", targetFilePath)
-	if err := os.WriteFile(outPath, metadataBytes, 0777); err != nil {
+	err = os.MkdirAll(filepath.Dir(outPath), 0777)
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(outPath, decryptedBytes, 0777); err != nil {
 		return fmt.Errorf("failed to write %q: %w", outPath, err)
 	}
 
 	fmt.Println(outPath)
 
-	//for _, chunkId := range docFile.ChunkIds {
-	//	chunkFilepath := filepath.Join(backupPath, chunkId[:2], chunkId)
-	//	fmt.Printf("- %s\n", chunkFilepath)
-	//
-	//	packagePath := chunkFilepath
-	//	packageFile, err := os.Open(packagePath)
-	//	if err != nil {
-	//		return fmt.Errorf("failed to open %q: %w", packagePath, err)
-	//	}
-	//	defer func() {
-	//		_ = packageFile.Close()
-	//	}()
-	//
-	//	chunkReader := bufio.NewReader(packageFile)
-	//	packageVersion, err := chunkReader.ReadByte()
-	//	if err != nil {
-	//		return fmt.Errorf("failed to read version from %q: %w", packagePath, err)
-	//	}
-	//	if packageVersion != version {
-	//		return fmt.Errorf("%q version %d does not match metadata file version %d", packagePath, packageVersion, version)
-	//	}
-	//
-	//	packageBytes, err := decrypt(chunkReader, streamKey, getAdditionalData(version, type_, packageName))
-	//	if err != nil {
-	//		return fmt.Errorf("failed to decrypt %q: %w", packagePath, err)
-	//	}
-	//
-	//	var ext string
-	//		ext = ".tar"
-	//
-	//	outPath := packageName + ext
-	//	if err := os.WriteFile(outPath, packageBytes, 0777); err != nil {
-	//		return fmt.Errorf("failed to write %q: %w", outPath, err)
-	//	}
-	//	fmt.Println(outPath)
-	//}
 	return nil
 }
 
