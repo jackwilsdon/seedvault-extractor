@@ -171,7 +171,7 @@ func extractFileBackup(backupPath string) error {
 		fmt.Printf("metadata: %v\n", metadata)
 	}
 
-	err = restoreBackupSnapshot(backupPath, metadata)
+	err = restoreBackupSnapshot(storedSnapshot, metadata)
 	if err != nil {
 		return err
 	}
@@ -179,7 +179,16 @@ func extractFileBackup(backupPath string) error {
 	return nil
 }
 
-func restoreBackupSnapshot(backupPath string, metadata internal.BackupSnapshot) error {
+type RestorableFile struct {
+	mediaFile *internal.BackupMediaFile
+	docFile   *internal.BackupDocumentFile
+}
+type RestorableChunk struct {
+	chunkId string
+	files   []RestorableFile
+}
+
+func restoreBackupSnapshot(storedSnapshot storedSnapshotT, metadata internal.BackupSnapshot) error {
 	filesTotal := len(metadata.MediaFiles) + len(metadata.DocumentFiles)
 	fmt.Println("filesTotal ", filesTotal)
 
@@ -192,14 +201,6 @@ func restoreBackupSnapshot(backupPath string, metadata internal.BackupSnapshot) 
 	}
 	fmt.Println("totalSize ", totalSize)
 
-	type RestorableFile struct {
-		mediaFile *internal.BackupMediaFile
-		docFile   *internal.BackupDocumentFile
-	}
-	type RestorableChunk struct {
-		chunkId string
-		files   []RestorableFile
-	}
 	zipChunkMap := map[string]*RestorableChunk{}
 	chunkMap := map[string]*RestorableChunk{}
 
@@ -230,32 +231,32 @@ func restoreBackupSnapshot(backupPath string, metadata internal.BackupSnapshot) 
 	}
 	fmt.Printf("%d non zip chunks found\n", len(chunkMap))
 
-	for _, docFile := range metadata.MediaFiles {
-		fmt.Printf("DF %s/%s %d %s\n", docFile.Path, docFile.Name, docFile.Size, docFile.ChunkIds)
-
-		if docFile.ZipIndex > 0 {
-			if len(docFile.ChunkIds) != 1 {
-				return fmt.Errorf("more than 1 zip chunk: %s", docFile.Name)
-			}
-			chunkId := docFile.ChunkIds[0]
-			zipChunk, ok := zipChunkMap[chunkId]
-			if !ok {
-				zipChunk = &RestorableChunk{chunkId: chunkId}
-				zipChunkMap[chunkId] = zipChunk
-			}
-			zipChunk.files = append(zipChunk.files, RestorableFile{mediaFile: docFile})
-		} else {
-			for _, chunkId := range docFile.ChunkIds {
-				chunk, ok := chunkMap[chunkId]
-				if !ok {
-					chunk = &RestorableChunk{chunkId: chunkId}
-					chunkMap[chunkId] = chunk
-				}
-				chunk.files = append(chunk.files, RestorableFile{mediaFile: docFile})
-			}
-		}
-	}
-	fmt.Printf("%d non zip chunks found\n", len(chunkMap))
+	//for _, docFile := range metadata.MediaFiles {
+	//	fmt.Printf("DF %s/%s %d %s\n", docFile.Path, docFile.Name, docFile.Size, docFile.ChunkIds)
+	//
+	//	if docFile.ZipIndex > 0 {
+	//		if len(docFile.ChunkIds) != 1 {
+	//			return fmt.Errorf("more than 1 zip chunk: %s", docFile.Name)
+	//		}
+	//		chunkId := docFile.ChunkIds[0]
+	//		zipChunk, ok := zipChunkMap[chunkId]
+	//		if !ok {
+	//			zipChunk = &RestorableChunk{chunkId: chunkId}
+	//			zipChunkMap[chunkId] = zipChunk
+	//		}
+	//		zipChunk.files = append(zipChunk.files, RestorableFile{mediaFile: docFile})
+	//	} else {
+	//		for _, chunkId := range docFile.ChunkIds {
+	//			chunk, ok := chunkMap[chunkId]
+	//			if !ok {
+	//				chunk = &RestorableChunk{chunkId: chunkId}
+	//				chunkMap[chunkId] = chunk
+	//			}
+	//			chunk.files = append(chunk.files, RestorableFile{mediaFile: docFile})
+	//		}
+	//	}
+	//}
+	//fmt.Printf("%d non zip chunks found\n", len(chunkMap))
 
 	fmt.Printf("%d zip chunks found\n", len(zipChunkMap))
 	var singleChunks []*RestorableChunk
@@ -297,88 +298,139 @@ func restoreBackupSnapshot(backupPath string, metadata internal.BackupSnapshot) 
 
 	fmt.Printf("Extracting %d single chunks\n", len(singleChunks))
 	for _, singleChunk := range singleChunks {
-		fmt.Printf("singleChunk %s\n", singleChunk)
-
-		//decryptedStream := getAndDecryptChunk(version, storedSnapshot, singleChunk.chunkId)
-		version := byte(1)
-
-		// getChunkInputStream
-		chunkFilepath := filepath.Join(backupPath, singleChunk.chunkId[:2], singleChunk.chunkId)
-		chunkFile, err := os.Open(chunkFilepath)
+		err := restoreSingleChunk(storedSnapshot, singleChunk)
 		if err != nil {
-			return fmt.Errorf("failed to open %q: %w", chunkFilepath, err)
+			return err
 		}
-		defer chunkFile.Close()
-		chunkReader := bufio.NewReader(chunkFile)
-
-		// inputStream.readVersion(version)
-		packageVersion, err := chunkReader.ReadByte()
-		if err != nil {
-			return fmt.Errorf("failed to read version from %q: %w", chunkFilepath, err)
-		}
-		if packageVersion != version {
-			fmt.Printf("%q version %d does not match metadata file version %d\n", chunkFilepath, packageVersion, version)
-		}
-
-		// getAssociatedDataForChunk
-		KEY_SIZE_BYTES := 256 / 8
-		token, err := hex.DecodeString(singleChunk.chunkId)
-		if err != nil {
-			return fmt.Errorf("failed to parse chunkId %q: %s\n", singleChunk.chunkId, err)
-		}
-		if len(token) != KEY_SIZE_BYTES {
-			return fmt.Errorf("failed to parse token,wrong length %d: %q\n", len(token), token)
-		}
-		if debug {
-			fmt.Printf("token: %d\n", token)
-		}
-
-		seed, err := mnemonicToSeed(os.Args[2])
-		if err != nil {
-			return fmt.Errorf("failed to read seed from mnemonic: %s\n", err)
-		}
-		if debug {
-			fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
-		}
-
-		streamKey := hkdfExpand(seed[32:], []byte("stream key"), int64(KEY_SIZE_BYTES))
-		if debug {
-			fmt.Printf("streamKey: %s\n", hex.EncodeToString(streamKey))
-		}
-
-		associatedData := make([]byte, 2+KEY_SIZE_BYTES)
-		associatedData[0] = version
-		associatedData[1] = TypeChunk
-		copy(associatedData[2:], token)
-
-		//newDecryptingStream
-		metadataBytes, err := decrypt(chunkReader, streamKey, associatedData)
-		if err != nil {
-			return fmt.Errorf("failed to decrypt metadata: %s\n", err)
-		}
-		if debug {
-			fmt.Printf("metadata: %s\n", string(metadataBytes))
-		}
-
-		targetFilePath := ""
-		if singleChunk.files[0].mediaFile != nil {
-			targetFilePath = singleChunk.files[0].mediaFile.Path + "/" + singleChunk.files[0].mediaFile.Name
-		} else {
-			targetFilePath = singleChunk.files[0].docFile.Path + "/" + singleChunk.files[0].docFile.Name
-		}
-
-		outPath := filepath.Join(".", "testOut", targetFilePath)
-		if err := os.WriteFile(outPath, metadataBytes, 0777); err != nil {
-			return fmt.Errorf("failed to write %q: %w", outPath, err)
-		}
-
-		fmt.Println(outPath)
 	}
 
 	fmt.Printf("Extracting %d multi chunks\n", len(multiChunks))
 	//for _, multiChunk := range multiChunks {
 	//}
 
+	return nil
+}
+
+func restoreSingleChunk(storedSnapshot storedSnapshotT, singleChunk *RestorableChunk) error {
+	//decryptedStream := getAndDecryptChunk(version, storedSnapshot, singleChunk.chunkId)
+	fmt.Printf("singleChunk %s\n", singleChunk)
+
+	if len(singleChunk.files) != 1 {
+		return fmt.Errorf("not a single chunk")
+	}
+	file := singleChunk.files[0]
+	version := byte(0)
+
+	// getChunkInputStream
+	chunkFilepath := filepath.Join(storedSnapshot.path, "..", singleChunk.chunkId[:2], singleChunk.chunkId)
+	chunkFile, err := os.Open(chunkFilepath)
+	if err != nil {
+		return fmt.Errorf("failed to open %q: %w", chunkFilepath, err)
+	}
+	defer chunkFile.Close()
+	chunkReader := bufio.NewReader(chunkFile)
+
+	// inputStream.readVersion(version)
+	packageVersion, err := chunkReader.ReadByte()
+	if err != nil {
+		return fmt.Errorf("failed to read version from %q: %w", chunkFilepath, err)
+	}
+	if packageVersion != version {
+		fmt.Printf("%q version %d does not match metadata file version %d\n", chunkFilepath, packageVersion, version)
+	}
+
+	// getAssociatedDataForChunk
+	KEY_SIZE_BYTES := 256 / 8
+	token, err := hex.DecodeString(singleChunk.chunkId)
+	if err != nil {
+		return fmt.Errorf("failed to parse chunkId %q: %s\n", singleChunk.chunkId, err)
+	}
+	if len(token) != KEY_SIZE_BYTES {
+		return fmt.Errorf("failed to parse token,wrong length %d: %q\n", len(token), token)
+	}
+	if debug {
+		fmt.Printf("token: %d\n", token)
+	}
+
+	seed, err := mnemonicToSeed(os.Args[2])
+	if err != nil {
+		return fmt.Errorf("failed to read seed from mnemonic: %s\n", err)
+	}
+	if debug {
+		fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
+	}
+
+	//streamKey := hkdfExpand(seed[32:], []byte("Chunk ID calculation"), int64(KEY_SIZE_BYTES))
+	//streamKey := hkdfExpand(seed[32:], []byte("app data key"), int64(KEY_SIZE_BYTES))
+	streamKey := hkdfExpand(seed[32:], []byte("stream key"), int64(KEY_SIZE_BYTES))
+	if debug {
+		fmt.Printf("streamKey: %s\n", hex.EncodeToString(streamKey))
+	}
+
+	associatedData := make([]byte, 2+KEY_SIZE_BYTES)
+	associatedData[0] = version
+	associatedData[1] = TypeChunk
+	copy(associatedData[2:], token)
+
+	//newDecryptingStream
+	metadataBytes, err := decrypt(chunkReader, streamKey, associatedData)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt metadata: %s\n", err)
+	}
+	if debug {
+		fmt.Printf("metadata: %s\n", string(metadataBytes))
+	}
+
+	targetFilePath := ""
+	if file.mediaFile != nil {
+		targetFilePath = file.mediaFile.Path + "/" + singleChunk.files[0].mediaFile.Name
+	} else {
+		targetFilePath = file.docFile.Path + "/" + singleChunk.files[0].docFile.Name
+	}
+
+	outPath := filepath.Join(".", "testOut", targetFilePath)
+	if err := os.WriteFile(outPath, metadataBytes, 0777); err != nil {
+		return fmt.Errorf("failed to write %q: %w", outPath, err)
+	}
+
+	fmt.Println(outPath)
+
+	//for _, chunkId := range docFile.ChunkIds {
+	//	chunkFilepath := filepath.Join(backupPath, chunkId[:2], chunkId)
+	//	fmt.Printf("- %s\n", chunkFilepath)
+	//
+	//	packagePath := chunkFilepath
+	//	packageFile, err := os.Open(packagePath)
+	//	if err != nil {
+	//		return fmt.Errorf("failed to open %q: %w", packagePath, err)
+	//	}
+	//	defer func() {
+	//		_ = packageFile.Close()
+	//	}()
+	//
+	//	chunkReader := bufio.NewReader(packageFile)
+	//	packageVersion, err := chunkReader.ReadByte()
+	//	if err != nil {
+	//		return fmt.Errorf("failed to read version from %q: %w", packagePath, err)
+	//	}
+	//	if packageVersion != version {
+	//		return fmt.Errorf("%q version %d does not match metadata file version %d", packagePath, packageVersion, version)
+	//	}
+	//
+	//	packageBytes, err := decrypt(chunkReader, streamKey, getAdditionalData(version, type_, packageName))
+	//	if err != nil {
+	//		return fmt.Errorf("failed to decrypt %q: %w", packagePath, err)
+	//	}
+	//
+	//	var ext string
+	//		ext = ".tar"
+	//
+	//	outPath := packageName + ext
+	//	if err := os.WriteFile(outPath, packageBytes, 0777); err != nil {
+	//		return fmt.Errorf("failed to write %q: %w", outPath, err)
+	//	}
+	//	fmt.Println(outPath)
+	//}
 	return nil
 }
 
