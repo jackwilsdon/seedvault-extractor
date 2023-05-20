@@ -317,16 +317,22 @@ func restoreBackupSnapshot(storedSnapshot storedSnapshotT, metadata internal.Bac
 	return nil
 }
 
+func getFilePath(file RestorableFile) (string, error) {
+	if file.mediaFile != nil {
+		return file.mediaFile.Path + "/" + file.mediaFile.Name, nil
+	} else if file.docFile != nil {
+		return file.docFile.Path + "/" + file.docFile.Name, nil
+	}
+	return "", fmt.Errorf("invalid restorable file has no path")
+}
+
 func restoreSingleChunk(chunkFolder, chunkId string, file RestorableFile) error {
 	version := byte(0)
 
-	targetFilePath := ""
-	if file.mediaFile != nil {
-		targetFilePath = file.mediaFile.Path + "/" + file.mediaFile.Name
-	} else {
-		targetFilePath = file.docFile.Path + "/" + file.docFile.Name
+	targetFilePath, err := getFilePath(file)
+	if err != nil {
+		return err
 	}
-
 	if debug {
 		fmt.Printf("Decrypting single chunk file %q...\n", targetFilePath)
 	}
@@ -358,17 +364,12 @@ func restoreSingleChunk(chunkFolder, chunkId string, file RestorableFile) error 
 		fmt.Printf("token: %d\n", token)
 	}
 
-	seed, err := mnemonicToSeed(os.Args[2])
+	streamKey, err := buildKey("stream key")
 	if err != nil {
-		return fmt.Errorf("failed to read seed from mnemonic: %s\n", err)
+		return err
 	}
 	if debug {
-		fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
-	}
-
-	streamKey := hkdfExpand(seed[32:], []byte("stream key"), int64(32))
-	if debug {
-		fmt.Printf("streamKey: %s\n", hex.EncodeToString(streamKey))
+		fmt.Printf("stream key: %s\n", hex.EncodeToString(streamKey))
 	}
 
 	associatedData := make([]byte, 2+32)
@@ -396,6 +397,20 @@ func restoreSingleChunk(chunkFolder, chunkId string, file RestorableFile) error 
 	}
 
 	return nil
+}
+
+func buildKey(keyInfo string) ([]byte, error) {
+	seed, err := mnemonicToSeed(os.Args[2])
+	if err != nil {
+		return nil, fmt.Errorf("failed to read seed from mnemonic: %s\n", err)
+	}
+	if debug {
+		fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
+	}
+
+	streamKey := hkdfExpand(seed[32:], []byte(keyInfo), int64(32))
+
+	return streamKey, nil
 }
 
 func extractAppBackup(backupPath string) error {
@@ -438,15 +453,10 @@ func extractAppBackup(backupPath string) error {
 		fmt.Printf("token: %d\n", token)
 	}
 
-	seed, err := mnemonicToSeed(os.Args[2])
+	key, err := buildKey("app data key")
 	if err != nil {
-		return fmt.Errorf("failed to read seed from mnemonic: %s\n", err)
+		return err
 	}
-	if debug {
-		fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
-	}
-
-	key := hkdfExpand(seed[32:], []byte("app data key"), 32)
 	if debug {
 		fmt.Printf("key: %s\n", hex.EncodeToString(key))
 	}
