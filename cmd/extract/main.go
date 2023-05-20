@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"compress/gzip"
@@ -270,32 +271,6 @@ func restoreBackupSnapshot(storedSnapshot storedSnapshotT, metadata internal.Bac
 		}
 	}
 
-	fmt.Printf("Extracting %d zip chunks\n", len(zipChunkMap))
-	//for _, zipChunk := range zipChunkMap {
-	//
-	//	decryptedStream := getAndDecryptChunk(version, storedSnapshot, zipChunk.chunkId)
-	//
-	//	reader, err := zip.NewReader(decryptedStream, -1)
-	//	if err != nil {
-	//		return err
-	//	}
-	//	for _, zipEntry := range reader {
-	//		//restoreZipEntry
-	//		while (entry != null && entry.name != file.zipIndex.toString()) {
-	//			entry = zip.nextEntry
-	//		}
-	//		check(entry != null) { "zip entry was null for: $file" }
-	//		restoreFile(file, observer, "S") { outputStream: OutputStream ->
-	//			val bytes = zip.copyTo(outputStream)
-	//			zip.closeEntry()
-	//			bytes
-	//		}
-	//		if err != nil {
-	//			fmt.Printf("failed to extract small file %s\n", zipEntry)
-	//		}
-	//	}
-	//}
-
 	chunkFolder := filepath.Join(storedSnapshot.path, "..")
 
 	streamKey, err := buildKey("stream key")
@@ -306,17 +281,25 @@ func restoreBackupSnapshot(storedSnapshot storedSnapshotT, metadata internal.Bac
 		fmt.Printf("stream key: %s\n", hex.EncodeToString(streamKey))
 	}
 
-	fmt.Printf("Extracting %d single chunks\n", len(singleChunks))
-	for _, singleChunk := range singleChunks {
-		if len(singleChunk.files) != 1 {
-			return fmt.Errorf("unexpected number of files in single chunk: %d", len(singleChunk.files))
-		}
-
-		err := restoreSingleChunk(chunkFolder, singleChunk.chunkId, singleChunk.files[0], streamKey)
+	fmt.Printf("Extracting %d zip chunks\n", len(zipChunkMap))
+	for _, zipChunk := range zipChunkMap {
+		err := restoreZipChunk(chunkFolder, zipChunk.chunkId, zipChunk.files, streamKey)
 		if err != nil {
 			return err
 		}
 	}
+
+	//fmt.Printf("Extracting %d single chunks\n", len(singleChunks))
+	//for _, singleChunk := range singleChunks {
+	//	if len(singleChunk.files) != 1 {
+	//		return fmt.Errorf("unexpected number of files in single chunk: %d", len(singleChunk.files))
+	//	}
+	//
+	//	err := restoreSingleChunk(chunkFolder, singleChunk.chunkId, singleChunk.files[0], streamKey)
+	//	if err != nil {
+	//		return err
+	//	}
+	//}
 
 	fmt.Printf("Extracting %d multi chunks\n", len(multiChunks))
 	//for _, multiChunk := range multiChunks {
@@ -332,6 +315,91 @@ func getFilePath(file RestorableFile) (string, error) {
 		return file.docFile.Path + "/" + file.docFile.Name, nil
 	}
 	return "", fmt.Errorf("invalid restorable file has no path")
+}
+
+func restoreZipChunk(chunkFolder, chunkId string, files []RestorableFile, streamKey []byte) error {
+	version := byte(0)
+
+	if debug {
+		fmt.Printf("Decrypting zip chunk with %d files...\n", len(files))
+	}
+
+	chunkFilepath := filepath.Join(chunkFolder, chunkId[:2], chunkId)
+	chunkFile, err := os.Open(chunkFilepath)
+	if err != nil {
+		return fmt.Errorf("failed to open %q: %w", chunkFilepath, err)
+	}
+	defer func() { _ = chunkFile.Close() }()
+	chunkReader := bufio.NewReader(chunkFile)
+
+	chunkEncVersion, err := chunkReader.ReadByte()
+	if err != nil {
+		return fmt.Errorf("failed to read version from %q: %w", chunkFilepath, err)
+	}
+	if chunkEncVersion != version {
+		return fmt.Errorf("%q chunk encryption version %d does not match expected version %d\n", chunkFilepath, chunkEncVersion, version)
+	}
+
+	token, err := hex.DecodeString(chunkId)
+	if err != nil {
+		return fmt.Errorf("failed to parse chunkId %q: %s\n", chunkId, err)
+	}
+	if len(token) != 32 {
+		return fmt.Errorf("failed to parse token, wrong length %d: %q\n", len(token), token)
+	}
+	if debug {
+		fmt.Printf("token: %d\n", token)
+	}
+
+	associatedData := make([]byte, 2+32)
+	associatedData[0] = version
+	associatedData[1] = TypeChunk
+	copy(associatedData[2:], token)
+
+	decryptedBytes, err := decrypt(chunkReader, streamKey, associatedData)
+	if err != nil {
+		return fmt.Errorf("failed to decrypt file chunk: %s\n", err)
+	}
+	if debug {
+		fmt.Printf("decrypted file chunk length: %d\n", len(decryptedBytes))
+	}
+
+	// zip specific from here
+	reader, err := zip.NewReader(bytes.NewReader(decryptedBytes), int64(len(decryptedBytes)))
+	if err != nil {
+		return err
+	}
+	for _, zipEntry := range reader.File {
+		filePath := filepath.Join("decrypted", chunkId, zipEntry.Name)
+		if !strings.HasPrefix(filePath, "decrypted"+string(os.PathSeparator)) {
+			return fmt.Errorf("invalid file path: %s", filePath)
+		}
+
+		fmt.Printf("Decrypting small single from zip chunk %q...\n", filePath)
+
+		err = os.MkdirAll(filepath.Dir(filePath), 0777)
+		if err != nil {
+			return err
+		}
+
+		zippedFile, err := zipEntry.Open()
+		if err != nil {
+			return err
+		}
+		defer zippedFile.Close()
+
+		destinationFile, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, zipEntry.Mode())
+		if err != nil {
+			return err
+		}
+		defer destinationFile.Close()
+
+		if _, err := io.Copy(destinationFile, zippedFile); err != nil {
+			return fmt.Errorf("failed to write %q: %w", filePath, err)
+		}
+	}
+
+	return nil
 }
 
 func restoreSingleChunk(chunkFolder, chunkId string, file RestorableFile, streamKey []byte) error {
