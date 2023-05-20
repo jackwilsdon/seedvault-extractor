@@ -289,21 +289,26 @@ func restoreBackupSnapshot(storedSnapshot storedSnapshotT, metadata internal.Bac
 		}
 	}
 
-	//fmt.Printf("Extracting %d single chunks\n", len(singleChunks))
-	//for _, singleChunk := range singleChunks {
-	//	if len(singleChunk.files) != 1 {
-	//		return fmt.Errorf("unexpected number of files in single chunk: %d", len(singleChunk.files))
-	//	}
-	//
-	//	err := restoreSingleChunk(chunkFolder, singleChunk.chunkId, singleChunk.files[0], streamKey)
-	//	if err != nil {
-	//		return err
-	//	}
-	//}
+	fmt.Printf("Extracting %d single chunks\n", len(singleChunks))
+	for _, singleChunk := range singleChunks {
+		if len(singleChunk.files) != 1 {
+			return fmt.Errorf("unexpected number of files in single chunk: %d", len(singleChunk.files))
+		}
+
+		err := restoreSingleChunk(chunkFolder, singleChunk.chunkId, singleChunk.files[0], streamKey)
+		if err != nil {
+			return err
+		}
+	}
 
 	fmt.Printf("Extracting %d multi chunks\n", len(multiChunks))
-	//for _, multiChunk := range multiChunks {
-	//}
+	for _, _ = range multiChunks {
+		return fmt.Errorf("multi chunk files are not supported yet")
+		//err := restoreMultiChunk(chunkFolder, multiChunk.chunkId, multiChunk.files, streamKey)
+		//if err != nil {
+		//	return err
+		//}
+	}
 
 	return nil
 }
