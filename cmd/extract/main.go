@@ -296,9 +296,15 @@ func restoreBackupSnapshot(storedSnapshot storedSnapshotT, metadata internal.Bac
 	//	}
 	//}
 
+	chunkFolder := filepath.Join(storedSnapshot.path, "..")
+
 	fmt.Printf("Extracting %d single chunks\n", len(singleChunks))
 	for _, singleChunk := range singleChunks {
-		err := restoreSingleChunk(storedSnapshot, singleChunk)
+		if len(singleChunk.files) != 1 {
+			return fmt.Errorf("unexpected number of files in single chunk: %d", len(singleChunk.files))
+		}
+
+		err := restoreSingleChunk(chunkFolder, singleChunk.chunkId, singleChunk.files[0])
 		if err != nil {
 			return err
 		}
@@ -311,13 +317,8 @@ func restoreBackupSnapshot(storedSnapshot storedSnapshotT, metadata internal.Bac
 	return nil
 }
 
-func restoreSingleChunk(storedSnapshot storedSnapshotT, singleChunk *RestorableChunk) error {
+func restoreSingleChunk(chunkFolder, chunkId string, file RestorableFile) error {
 	version := byte(0)
-
-	if len(singleChunk.files) != 1 {
-		return fmt.Errorf("unexpected number of files in single chunk: %d", len(singleChunk.files))
-	}
-	file := singleChunk.files[0]
 
 	targetFilePath := ""
 	if file.mediaFile != nil {
@@ -330,7 +331,7 @@ func restoreSingleChunk(storedSnapshot storedSnapshotT, singleChunk *RestorableC
 		fmt.Printf("Decrypting single chunk file %q...\n", targetFilePath)
 	}
 
-	chunkFilepath := filepath.Join(storedSnapshot.path, "..", singleChunk.chunkId[:2], singleChunk.chunkId)
+	chunkFilepath := filepath.Join(chunkFolder, chunkId[:2], chunkId)
 	chunkFile, err := os.Open(chunkFilepath)
 	if err != nil {
 		return fmt.Errorf("failed to open %q: %w", chunkFilepath, err)
@@ -346,9 +347,9 @@ func restoreSingleChunk(storedSnapshot storedSnapshotT, singleChunk *RestorableC
 		return fmt.Errorf("%q chunk encryption version %d does not match expected version %d\n", chunkFilepath, chunkEncVersion, version)
 	}
 
-	token, err := hex.DecodeString(singleChunk.chunkId)
+	token, err := hex.DecodeString(chunkId)
 	if err != nil {
-		return fmt.Errorf("failed to parse chunkId %q: %s\n", singleChunk.chunkId, err)
+		return fmt.Errorf("failed to parse chunkId %q: %s\n", chunkId, err)
 	}
 	if len(token) != 32 {
 		return fmt.Errorf("failed to parse token, wrong length %d: %q\n", len(token), token)
