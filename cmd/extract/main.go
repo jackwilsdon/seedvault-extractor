@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -108,8 +109,6 @@ func extractFileBackup(backupPath string) error {
 			}
 			tm := time.Unix(int64(timestamp/1000), 0)
 
-			fmt.Printf("storedSnapshot: %v\n", timestamp)
-			fmt.Printf("storedSnapshot: %s - %s\n", tm, backupPath+"/"+chunkFolder.Name())
 			storedSnapshots = append(storedSnapshots, storedSnapshotT{
 				time:      tm.String(),
 				timestamp: timestamp,
@@ -121,7 +120,16 @@ func extractFileBackup(backupPath string) error {
 		}
 	}
 
-	storedSnapshot := storedSnapshots[0]
+	sort.Slice(storedSnapshots, func(i, j int) bool {
+		return storedSnapshots[i].timestamp < storedSnapshots[j].timestamp
+	})
+
+	fmt.Println("storedSnapshots:")
+	for i, snapshot := range storedSnapshots {
+		fmt.Printf("[%d] %s - %s\n", i, snapshot.time, snapshot.path)
+	}
+
+	storedSnapshot := storedSnapshots[len(storedSnapshots)-1]
 	metadataPath := storedSnapshot.path
 
 	s, err := os.Stat(metadataPath)
@@ -230,36 +238,33 @@ func restoreBackupSnapshot(storedSnapshot storedSnapshotT, metadata internal.Bac
 			}
 		}
 	}
-	fmt.Printf("%d non zip chunks found\n", len(chunkMap))
 
-	//for _, docFile := range metadata.MediaFiles {
-	//	fmt.Printf("DF %s/%s %d %s\n", docFile.Path, docFile.Name, docFile.Size, docFile.ChunkIds)
-	//
-	//	if docFile.ZipIndex > 0 {
-	//		if len(docFile.ChunkIds) != 1 {
-	//			return fmt.Errorf("more than 1 zip chunk: %s", docFile.Name)
-	//		}
-	//		chunkId := docFile.ChunkIds[0]
-	//		zipChunk, ok := zipChunkMap[chunkId]
-	//		if !ok {
-	//			zipChunk = &RestorableChunk{chunkId: chunkId}
-	//			zipChunkMap[chunkId] = zipChunk
-	//		}
-	//		zipChunk.files = append(zipChunk.files, RestorableFile{mediaFile: docFile})
-	//	} else {
-	//		for _, chunkId := range docFile.ChunkIds {
-	//			chunk, ok := chunkMap[chunkId]
-	//			if !ok {
-	//				chunk = &RestorableChunk{chunkId: chunkId}
-	//				chunkMap[chunkId] = chunk
-	//			}
-	//			chunk.files = append(chunk.files, RestorableFile{mediaFile: docFile})
-	//		}
-	//	}
-	//}
-	//fmt.Printf("%d non zip chunks found\n", len(chunkMap))
+	for _, docFile := range metadata.DocumentFiles {
+		fmt.Printf("DF %s/%s %d %s\n", docFile.Path, docFile.Name, docFile.Size, docFile.ChunkIds)
 
-	fmt.Printf("%d zip chunks found\n", len(zipChunkMap))
+		if docFile.ZipIndex > 0 {
+			if len(docFile.ChunkIds) != 1 {
+				return fmt.Errorf("more than 1 zip chunk: %s", docFile.Name)
+			}
+			chunkId := docFile.ChunkIds[0]
+			zipChunk, ok := zipChunkMap[chunkId]
+			if !ok {
+				zipChunk = &RestorableChunk{chunkId: chunkId}
+				zipChunkMap[chunkId] = zipChunk
+			}
+			zipChunk.files = append(zipChunk.files, RestorableFile{docFile: docFile})
+		} else {
+			for _, chunkId := range docFile.ChunkIds {
+				chunk, ok := chunkMap[chunkId]
+				if !ok {
+					chunk = &RestorableChunk{chunkId: chunkId}
+					chunkMap[chunkId] = chunk
+				}
+				chunk.files = append(chunk.files, RestorableFile{docFile: docFile})
+			}
+		}
+	}
+
 	var singleChunks []*RestorableChunk
 	var multiChunks []*RestorableChunk
 	for _, chunk := range chunkMap {
