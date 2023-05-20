@@ -312,41 +312,46 @@ func restoreBackupSnapshot(storedSnapshot storedSnapshotT, metadata internal.Bac
 }
 
 func restoreSingleChunk(storedSnapshot storedSnapshotT, singleChunk *RestorableChunk) error {
-	//decryptedStream := getAndDecryptChunk(version, storedSnapshot, singleChunk.chunkId)
-	fmt.Printf("singleChunk %s\n", singleChunk)
-
-	if len(singleChunk.files) != 1 {
-		return fmt.Errorf("not a single chunk")
-	}
-	file := singleChunk.files[0]
 	version := byte(0)
 
-	// getChunkInputStream
+	if len(singleChunk.files) != 1 {
+		return fmt.Errorf("unexpected number of files in single chunk: %d", len(singleChunk.files))
+	}
+	file := singleChunk.files[0]
+
+	targetFilePath := ""
+	if file.mediaFile != nil {
+		targetFilePath = file.mediaFile.Path + "/" + file.mediaFile.Name
+	} else {
+		targetFilePath = file.docFile.Path + "/" + file.docFile.Name
+	}
+
+	if debug {
+		fmt.Printf("Decrypting single chunk file %q...\n", targetFilePath)
+	}
+
 	chunkFilepath := filepath.Join(storedSnapshot.path, "..", singleChunk.chunkId[:2], singleChunk.chunkId)
 	chunkFile, err := os.Open(chunkFilepath)
 	if err != nil {
 		return fmt.Errorf("failed to open %q: %w", chunkFilepath, err)
 	}
-	defer chunkFile.Close()
+	defer func() { _ = chunkFile.Close() }()
 	chunkReader := bufio.NewReader(chunkFile)
 
-	// inputStream.readVersion(version)
-	packageVersion, err := chunkReader.ReadByte()
+	chunkEncVersion, err := chunkReader.ReadByte()
 	if err != nil {
 		return fmt.Errorf("failed to read version from %q: %w", chunkFilepath, err)
 	}
-	if packageVersion != version {
-		fmt.Printf("%q version %d does not match metadata file version %d\n", chunkFilepath, packageVersion, version)
+	if chunkEncVersion != version {
+		return fmt.Errorf("%q chunk encryption version %d does not match expected version %d\n", chunkFilepath, chunkEncVersion, version)
 	}
 
-	// getAssociatedDataForChunk
-	KEY_SIZE_BYTES := 256 / 8
 	token, err := hex.DecodeString(singleChunk.chunkId)
 	if err != nil {
 		return fmt.Errorf("failed to parse chunkId %q: %s\n", singleChunk.chunkId, err)
 	}
-	if len(token) != KEY_SIZE_BYTES {
-		return fmt.Errorf("failed to parse token,wrong length %d: %q\n", len(token), token)
+	if len(token) != 32 {
+		return fmt.Errorf("failed to parse token, wrong length %d: %q\n", len(token), token)
 	}
 	if debug {
 		fmt.Printf("token: %d\n", token)
@@ -360,14 +365,12 @@ func restoreSingleChunk(storedSnapshot storedSnapshotT, singleChunk *RestorableC
 		fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
 	}
 
-	//streamKey := hkdfExpand(seed[32:], []byte("Chunk ID calculation"), int64(KEY_SIZE_BYTES))
-	//streamKey := hkdfExpand(seed[32:], []byte("app data key"), int64(KEY_SIZE_BYTES))
-	streamKey := hkdfExpand(seed[32:], []byte("stream key"), int64(KEY_SIZE_BYTES))
+	streamKey := hkdfExpand(seed[32:], []byte("stream key"), int64(32))
 	if debug {
 		fmt.Printf("streamKey: %s\n", hex.EncodeToString(streamKey))
 	}
 
-	associatedData := make([]byte, 2+KEY_SIZE_BYTES)
+	associatedData := make([]byte, 2+32)
 	associatedData[0] = version
 	associatedData[1] = TypeChunk
 	copy(associatedData[2:], token)
@@ -380,24 +383,16 @@ func restoreSingleChunk(storedSnapshot storedSnapshotT, singleChunk *RestorableC
 		fmt.Printf("decrypted file chunk length: %d\n", len(decryptedBytes))
 	}
 
-	targetFilePath := ""
-	if file.mediaFile != nil {
-		targetFilePath = file.mediaFile.Path + "/" + file.mediaFile.Name
-	} else {
-		targetFilePath = file.docFile.Path + "/" + file.docFile.Name
-	}
-
-	outPath := filepath.Join(".", "testOut", targetFilePath)
+	outPath := filepath.Join(".", "decrypted", targetFilePath)
 	err = os.MkdirAll(filepath.Dir(outPath), 0777)
 	if err != nil {
 		return err
 	}
 
-	if err := os.WriteFile(outPath, decryptedBytes, 0777); err != nil {
+	err = os.WriteFile(outPath, decryptedBytes, 0777)
+	if err != nil {
 		return fmt.Errorf("failed to write %q: %w", outPath, err)
 	}
-
-	fmt.Println(outPath)
 
 	return nil
 }
