@@ -317,6 +317,15 @@ func getFilePath(file RestorableFile) (string, error) {
 	return "", fmt.Errorf("invalid restorable file has no path")
 }
 
+func getZipIndex(file RestorableFile) (int32, error) {
+	if file.mediaFile != nil {
+		return file.mediaFile.ZipIndex, nil
+	} else if file.docFile != nil {
+		return file.docFile.ZipIndex, nil
+	}
+	return -1, fmt.Errorf("invalid restorable file has no path")
+}
+
 func restoreZipChunk(chunkFolder, chunkId string, files []RestorableFile, streamKey []byte) error {
 	version := byte(0)
 
@@ -365,17 +374,36 @@ func restoreZipChunk(chunkFolder, chunkId string, files []RestorableFile, stream
 	}
 
 	// zip specific from here
+	fileMetaMap := map[int32]RestorableFile{}
+	for _, file := range files {
+		idx, err := getZipIndex(file)
+		if err != nil {
+			return err
+		}
+		fileMetaMap[idx] = file
+	}
+
 	reader, err := zip.NewReader(bytes.NewReader(decryptedBytes), int64(len(decryptedBytes)))
 	if err != nil {
 		return err
 	}
 	for _, zipEntry := range reader.File {
-		filePath := filepath.Join("decrypted", chunkId, zipEntry.Name)
+		zipEntryIdx, err := strconv.ParseInt(zipEntry.Name, 10, 32)
+		if err != nil {
+			return err
+		}
+		zipEntryMeta := fileMetaMap[int32(zipEntryIdx)]
+		zipEntryPath, err := getFilePath(zipEntryMeta)
+		if err != nil {
+			return err
+		}
+		filePath := filepath.Join("decrypted", zipEntryPath)
 		if !strings.HasPrefix(filePath, "decrypted"+string(os.PathSeparator)) {
 			return fmt.Errorf("invalid file path: %s", filePath)
 		}
 
-		fmt.Printf("Decrypting small single from zip chunk %q...\n", filePath)
+		fmt.Printf("Decrypting small single from zip chunk %q... %v\n", filePath, zipEntry)
+		//fmt.Printf("Decrypting small single from zip chunk %q...\n", filePath)
 
 		err = os.MkdirAll(filepath.Dir(filePath), 0777)
 		if err != nil {
