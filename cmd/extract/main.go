@@ -298,13 +298,21 @@ func restoreBackupSnapshot(storedSnapshot storedSnapshotT, metadata internal.Bac
 
 	chunkFolder := filepath.Join(storedSnapshot.path, "..")
 
+	streamKey, err := buildKey("stream key")
+	if err != nil {
+		return err
+	}
+	if debug {
+		fmt.Printf("stream key: %s\n", hex.EncodeToString(streamKey))
+	}
+
 	fmt.Printf("Extracting %d single chunks\n", len(singleChunks))
 	for _, singleChunk := range singleChunks {
 		if len(singleChunk.files) != 1 {
 			return fmt.Errorf("unexpected number of files in single chunk: %d", len(singleChunk.files))
 		}
 
-		err := restoreSingleChunk(chunkFolder, singleChunk.chunkId, singleChunk.files[0])
+		err := restoreSingleChunk(chunkFolder, singleChunk.chunkId, singleChunk.files[0], streamKey)
 		if err != nil {
 			return err
 		}
@@ -326,7 +334,7 @@ func getFilePath(file RestorableFile) (string, error) {
 	return "", fmt.Errorf("invalid restorable file has no path")
 }
 
-func restoreSingleChunk(chunkFolder, chunkId string, file RestorableFile) error {
+func restoreSingleChunk(chunkFolder, chunkId string, file RestorableFile, streamKey []byte) error {
 	version := byte(0)
 
 	targetFilePath, err := getFilePath(file)
@@ -362,14 +370,6 @@ func restoreSingleChunk(chunkFolder, chunkId string, file RestorableFile) error 
 	}
 	if debug {
 		fmt.Printf("token: %d\n", token)
-	}
-
-	streamKey, err := buildKey("stream key")
-	if err != nil {
-		return err
-	}
-	if debug {
-		fmt.Printf("stream key: %s\n", hex.EncodeToString(streamKey))
 	}
 
 	associatedData := make([]byte, 2+32)
