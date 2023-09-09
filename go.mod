@@ -1,6 +1,6 @@
 module github.com/jackwilsdon/seedvault-extractor
 
-go 1.20
+go 1.21
 
 require (
 	github.com/google/tink/go v1.7.0
