@@ -29,13 +29,52 @@ const (
 )
 
 func main() {
-	if len(os.Args) != 3 {
-		_, _ = fmt.Fprintf(os.Stderr, "usage: %s path-to-backup mnemonic\n", filepath.Base(os.Args[0]))
-		os.Exit(1)
+	if len(os.Args) < 3 {
+		printHelp()
 	}
 
-	backupPath := os.Args[1]
-	metadataPath := filepath.Join(backupPath, ".backup.metadata")
+	userPath    := os.Args[1]
+	userPhrase  := os.Args[2]
+	userPackage := ""
+	userFlagListPackages  := false
+	userFlagDebugMode := false
+	userFlagCheckOnly := false
+
+	if os.Getenv("DEBUG") == "1" {
+		userFlagDebugMode = true
+	}
+
+	for argNum, argValue := range os.Args {
+		if argValue == "--list" {
+			userFlagListPackages = true
+		} else if argValue == "--debug" {
+			userFlagDebugMode = true
+		} else if argValue == "--check" {
+			userFlagCheckOnly = true
+		} else if argValue == "--package" {
+			if len(os.Args)-1 > argNum {
+				userPackage = os.Args[argNum+1]
+			} else {
+				fmt.Println("error: --package flag must be followed by a package name\n")
+				os.Exit(1)
+			}
+		}
+	}
+
+	if userFlagDebugMode {
+		fmt.Printf("USER INPUT -- userFlagListPackages: '%t'\n", userFlagListPackages)
+		fmt.Printf("USER INPUT -- userFlagDebugMode:    '%t'\n", userFlagDebugMode)
+		fmt.Printf("USER INPUT -- userFlagCheckOnly:    '%t'\n", userFlagCheckOnly)
+		fmt.Printf("USER INPUT -- userPath:             '%s'\n", userPath)
+		fmt.Printf("USER INPUT -- userPhrase:           '%s'\n", userPhrase)
+		fmt.Printf("USER INPUT -- userPackage:          '%s'\n", userPackage)
+	}
+
+	metadataPath := filepath.Join(userPath, ".backup.metadata")
+	if userFlagDebugMode {
+		fmt.Printf("metadataPath: %s\n", metadataPath)
+	}
+
 	_, err := os.Stat(metadataPath)
 	if errors.Is(err, os.ErrNotExist) {
 		_, _ = fmt.Fprintln(os.Stderr, "error: not a backup (missing .backup.metadata)")
@@ -46,6 +85,9 @@ func main() {
 	}
 
 	metadataFile, err := os.Open(metadataPath)
+	if userFlagDebugMode {
+		fmt.Printf("metadataFile: %s\n", metadataFile)
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: failed to open %q: %s\n", metadataPath, err)
 		os.Exit(1)
@@ -55,7 +97,14 @@ func main() {
 	}()
 
 	metadataReader := bufio.NewReader(metadataFile)
+	if userFlagDebugMode {
+		fmt.Printf("metadataReader: %s\n", metadataReader)
+	}
+
 	version, err := metadataReader.ReadByte()
+	if userFlagDebugMode {
+		fmt.Printf("userPath: %s\n", version)
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: failed to read version from %q: %s\n", metadataPath, err)
 		os.Exit(1)
@@ -65,45 +114,51 @@ func main() {
 		os.Exit(1)
 	}
 
-	debug := os.Getenv("DEBUG") == "1"
-	if debug {
+	if userFlagDebugMode {
 		fmt.Printf("version: %d\n", version)
 	}
 
-	backupName := filepath.Base(backupPath)
+	backupName := filepath.Base(userPath)
+	if userFlagDebugMode {
+		fmt.Printf("backupName: %s\n", backupName)
+	}
+
 	token, err := strconv.ParseUint(backupName, 10, 64)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: failed to parse backup name %q: %s\n", backupName, err)
 		os.Exit(1)
 	}
 
-	if debug {
+	if userFlagDebugMode {
 		fmt.Printf("token: %d\n", token)
 	}
 
-	seed, err := mnemonicToSeed(os.Args[2])
+	seed, err := mnemonicToSeed(userPhrase)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: failed to read seed from mnemonic: %s\n", err)
 		os.Exit(1)
 	}
-	if debug {
+	if userFlagDebugMode {
 		fmt.Printf("seed: %s\n", hex.EncodeToString(seed))
 	}
 
 	key := hkdfExpand(seed[32:], []byte("app data key"), 32)
-	if debug {
+	if userFlagDebugMode {
 		fmt.Printf("key: %s\n", hex.EncodeToString(key))
 	}
 
 	associatedData := make([]byte, 10)
 	associatedData[0] = version
 	binary.BigEndian.PutUint64(associatedData[2:], token)
+	if userFlagDebugMode {
+		fmt.Printf("associatedData: %s\n", associatedData)
+	}
 	metadataBytes, err := decrypt(metadataReader, key, associatedData)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: failed to decrypt metadata: %s\n", err)
 		os.Exit(1)
 	}
-	if debug {
+	if userFlagDebugMode {
 		fmt.Printf("metadata: %s\n", string(metadataBytes))
 	}
 
@@ -114,6 +169,9 @@ func main() {
 	}
 
 	metadataMetaBytes, ok := metadataMap["@meta@"]
+	if userFlagDebugMode {
+		fmt.Printf("metadataMetaBytes: %s\n", metadataMetaBytes)
+	}
 	if !ok {
 		_, _ = fmt.Fprintf(os.Stderr, "error: missing @meta@ key\n")
 		os.Exit(1)
@@ -122,20 +180,60 @@ func main() {
 		Version byte   `json:"version"`
 		Salt    string `json:"salt"`
 	}
+	if userFlagDebugMode {
+		fmt.Printf("metadataMeta: %s\n", metadataMeta)
+	}
 	if err := json.Unmarshal(metadataMetaBytes, &metadataMeta); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "error: failed to unmarshal @meta@: %s\n", err)
 		os.Exit(1)
 	}
+	if userFlagDebugMode {
+		fmt.Printf("metadataMeta.Version: %s\n", metadataMeta.Version)
+	}
+
 	if metadataMeta.Version != version {
 		_, _ = fmt.Fprintf(os.Stderr, "error: @meta@ version %d does not match metadata file version %d\n", metadataMeta.Version, version)
 		os.Exit(1)
 	}
 
+	if userFlagCheckOnly {
+		fmt.Printf("CHECK-MODE ENABLED: extract on '%s' stopped before deploying %d packages\n", backupName, len(metadataMap))
+		os.Exit(0)
+    }
+
+	if userFlagDebugMode {
+		fmt.Printf("metadataMap: %s\n", metadataMap)
+		fmt.Println("---- STARTING LOOP ----")
+	}
+
 	for packageName, packageMetaBytes := range metadataMap {
+		if userPackage != "" {
+			if userPackage == packageName {
+				if userFlagDebugMode {
+					fmt.Printf("    found %s package\n",packageName,userPackage)
+				}
+			} else {
+				if userFlagDebugMode {
+					fmt.Printf("    skipping %s package (does not match '%s')\n",packageName,userPackage)
+				}
+				continue
+			}
+		}
+
+		if userFlagDebugMode {
+			fmt.Printf("  packageName: %s\n", packageName)
+		}
+
 		if packageName == "@meta@" {
+			if userFlagDebugMode {
+				fmt.Println("    skipping @meta@ package")
+			}
 			continue
 		}
 		if packageName == "@end@" {
+			if userFlagDebugMode {
+				fmt.Println("    skipping @end@ package")
+			}
 			continue
 		}
 
@@ -145,22 +243,36 @@ func main() {
 				State      string `json:"state"`
 			}
 			if err := json.Unmarshal(packageMetaBytes, &packageMeta); err != nil {
-				return fmt.Errorf("failed to unmarshal metadata: %w", err)
+				return fmt.Errorf("    failed to unmarshal metadata: %w", err)
+			}
+			if userFlagListPackages {
+				if packageMeta.State != "" {
+					fmt.Printf("    %s (%s)\n", packageName, packageMeta.State)
+				} else {
+					fmt.Printf("    %s\n", packageName)
+				}
+				return nil
 			}
 			if packageMeta.State != "" {
-				fmt.Printf("skipping %q (unsupported state %q)\n", packageName, packageMeta.State)
+				fmt.Printf("    skipping %q (unsupported state %q)\n", packageName, packageMeta.State)
 				return nil
 			}
 			if packageMeta.BackupType != "KV" && packageMeta.BackupType != "FULL" {
-				fmt.Printf("skipping %q (unsupported backup type %q)\n", packageName, packageMeta.BackupType)
+				fmt.Printf("    skipping %q (unsupported backup type %q)\n", packageName, packageMeta.BackupType)
 				return nil
 			}
 
 			h := sha256.Sum256([]byte(metadataMeta.Salt + packageName))
-			packagePath := filepath.Join(backupPath, base64.RawURLEncoding.EncodeToString(h[:]))
+			packagePath := filepath.Join(userPath, base64.RawURLEncoding.EncodeToString(h[:]))
+			if userFlagDebugMode {
+				fmt.Printf("    packagePath: %s", packagePath)
+			}
 			packageFile, err := os.Open(packagePath)
+			if userFlagDebugMode {
+				fmt.Printf("    packageFile: %s", packageFile)
+			}
 			if err != nil {
-				return fmt.Errorf("failed to open %q: %w", packagePath, err)
+				return fmt.Errorf("    failed to open %q: %w", packagePath, err)
 			}
 			defer func() {
 				_ = packageFile.Close()
@@ -169,13 +281,16 @@ func main() {
 			packageReader := bufio.NewReader(packageFile)
 			packageVersion, err := packageReader.ReadByte()
 			if err != nil {
-				return fmt.Errorf("failed to read version from %q: %w", packagePath, err)
+				return fmt.Errorf("    failed to read version from %q: %w", packagePath, err)
 			}
 			if packageVersion != version {
-				return fmt.Errorf("%q version %d does not match metadata file version %d", packagePath, packageVersion, version)
+				return fmt.Errorf("    %q version %d does not match metadata file version %d", packagePath, packageVersion, version)
 			}
 
 			var type_ byte
+			if userFlagDebugMode {
+				fmt.Printf("    packageMeta.BackupType = %s", packageMeta.BackupType)
+			}
 			if packageMeta.BackupType == "KV" {
 				type_ = typeKVBackup
 			} else {
@@ -184,17 +299,17 @@ func main() {
 
 			packageBytes, err := decrypt(packageReader, key, getAdditionalData(version, type_, packageName))
 			if err != nil {
-				return fmt.Errorf("failed to decrypt %q: %w", packagePath, err)
+				return fmt.Errorf("    failed to decrypt %q: %w", packagePath, err)
 			}
 
 			var ext string
 			if packageMeta.BackupType == "KV" {
 				r, err := gzip.NewReader(bytes.NewReader(packageBytes))
 				if err != nil {
-					return fmt.Errorf("failed to decompress %q: %w", packagePath, err)
+					return fmt.Errorf("    failed to decompress %q: %w", packagePath, err)
 				}
 				if packageBytes, err = io.ReadAll(r); err != nil {
-					return fmt.Errorf("failed to decompress %q: %w", packagePath, err)
+					return fmt.Errorf("    failed to decompress %q: %w", packagePath, err)
 				}
 				ext = ".sqlite"
 			} else {
@@ -203,13 +318,13 @@ func main() {
 
 			outPath := packageName + ext
 			if err := os.WriteFile(outPath, packageBytes, 0777); err != nil {
-				return fmt.Errorf("failed to write %q: %w", outPath, err)
+				return fmt.Errorf("    failed to write %q: %w", outPath, err)
 			}
-			fmt.Println(outPath)
+			fmt.Printf("    extracting %s\n",outPath)
 			return nil
 		}()
 		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "warning: failed to extract %q: %s\n", packageName, err)
+			_, _ = fmt.Fprintf(os.Stderr, "    warning: failed to extract %q: %s\n", packageName, err)
 		}
 	}
 }
@@ -261,4 +376,24 @@ func decrypt(r *bufio.Reader, key []byte, associatedData []byte) ([]byte, error)
 		return nil, fmt.Errorf("failed to read decrypted data: %w", err)
 	}
 	return data, nil
+}
+
+func printHelp() {
+	execName := filepath.Base(os.Args[0])
+	fmt.Printf("usage: %s [PATH] [MNEMONIC] [optional]\n", execName)
+	fmt.Println("    PATH      should be a 13-digit folder name (inside .SeedVaultAndroidBackup)")
+	fmt.Println("    MNEMONIC  should be a twelve word phrase")
+	fmt.Println("")
+	fmt.Println("    Optional arguments include:")
+	fmt.Println("       --check    confirms that the backup metadata is valid, but does not extract the data")
+	fmt.Println("       --list     lists the package names only, but does not extract the data")
+	fmt.Println("       --debug    enables excessive amounts of output *INCLUDING SENSITIVE DATA, LIKE KEYS AND PHRASES*")
+	fmt.Println("       --package  specifies a Android package name -- all others will be skipped")
+	fmt.Println("")
+	fmt.Println("    Example usage:")
+	fmt.Printf("         %s my_backups/.SeedVaultAndroidBackup/1708344900209 'buzz float culture lake paper season amused rain marine promote coyote mechanic' --list\n",execName)
+	fmt.Printf("         %s my_backups/.SeedVaultAndroidBackup/1708344900209 'buzz float culture lake paper season amused rain marine promote coyote mechanic' --check\n",execName)
+	fmt.Printf("         %s my_backups/.SeedVaultAndroidBackup/1708344900209 'buzz float culture lake paper season amused rain marine promote coyote mechanic' --package com.android.contacts\n",execName)
+	fmt.Println("")
+	os.Exit(1)
 }
